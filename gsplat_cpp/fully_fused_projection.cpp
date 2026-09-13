@@ -44,6 +44,12 @@ torch::autograd::tensor_list FullyFusedProjectionPacked::forward(
   ctx->saved_data["sparse_grad"] = sparse_grad;
   ctx->saved_data["camera_model_type"] = camera_model_type;
 
+  // 保存 requires_grad 信息（兼容 PyTorch 2.1）
+  ctx->saved_data["means_requires_grad"] = means.requires_grad();
+  ctx->saved_data["quats_requires_grad"] = quats.requires_grad();
+  ctx->saved_data["scales_requires_grad"] = scales.requires_grad();
+  ctx->saved_data["viewmats_requires_grad"] = viewmats.requires_grad();
+
   return {camera_ids, gaussian_ids, radii,        means2d,
           depths,     conics,       compensations};
 }
@@ -74,6 +80,12 @@ torch::autograd::tensor_list FullyFusedProjectionPacked::backward(
   bool sparse_grad = ctx->saved_data["sparse_grad"].toBool();
   int camera_model_type = ctx->saved_data["camera_model_type"].toInt();
 
+  // 获取保存的 requires_grad 信息
+  bool means_requires_grad = ctx->saved_data["means_requires_grad"].toBool();
+  bool quats_requires_grad = ctx->saved_data["quats_requires_grad"].toBool();
+  bool scales_requires_grad = ctx->saved_data["scales_requires_grad"].toBool();
+  bool viewmats_requires_grad = ctx->saved_data["viewmats_requires_grad"].toBool();
+
   auto v_compensations = at::optional<torch::Tensor>(grad_outputs[6]);
   if (compensations.has_value()) {
     v_compensations = v_compensations.value().contiguous();
@@ -87,10 +99,10 @@ torch::autograd::tensor_list FullyFusedProjectionPacked::backward(
           gsplat::CameraModelType(camera_model_type), camera_ids, gaussian_ids,
           conics, compensations, v_means2d.contiguous(), v_depths.contiguous(),
           v_conics.contiguous(), v_compensations,
-          ctx->needs_input_grad(4), // viewmats_requires_grad
+          viewmats_requires_grad, // 使用保存的值替代 ctx->needs_input_grad(4)
           sparse_grad);
 
-  if (!ctx->needs_input_grad(0)) {
+  if (!means_requires_grad) {
     v_means = torch::Tensor();
   } else if (sparse_grad) {
     // # TODO: gaussian_ids is duplicated so not ideal.
@@ -99,26 +111,26 @@ torch::autograd::tensor_list FullyFusedProjectionPacked::backward(
     // # a customized optimizer would be needed in this case.
     v_means =
         torch::sparse_coo_tensor({gaussian_ids.unsqueeze(0)}, v_means,
-                                 means.sizes(), {}, viewmats.size(0) == 1);
+                                 means.sizes(), v_means.options());
   }
 
-  if (!ctx->needs_input_grad(1)) {
+  if (!quats_requires_grad) {
     v_quats = torch::Tensor();
   } else if (sparse_grad) {
     v_quats =
         torch::sparse_coo_tensor({gaussian_ids.unsqueeze(0)}, v_quats,
-                                 quats.sizes(), {}, viewmats.size(0) == 1);
+                                 quats.sizes(), v_quats.options());
   }
 
-  if (!ctx->needs_input_grad(2)) {
+  if (!scales_requires_grad) {
     v_scales = torch::Tensor();
   } else if (sparse_grad) {
     v_scales =
         torch::sparse_coo_tensor({gaussian_ids.unsqueeze(0)}, v_scales,
-                                 scales.sizes(), {}, viewmats.size(0) == 1);
+                                 scales.sizes(),  v_scales.options());
   }
 
-  if (!ctx->needs_input_grad(3)) {
+  if (!viewmats_requires_grad) {
     v_viewmats = torch::Tensor();
   }
 
@@ -190,6 +202,12 @@ torch::autograd::tensor_list FullyFusedProjectionPacked2DGS::forward(
   ctx->saved_data["height"] = height;
   ctx->saved_data["sparse_grad"] = sparse_grad;
 
+  // 保存 requires_grad 信息（兼容 PyTorch 2.1）
+  ctx->saved_data["means_requires_grad"] = means.requires_grad();
+  ctx->saved_data["quats_requires_grad"] = quats.requires_grad();
+  ctx->saved_data["scales_requires_grad"] = scales.requires_grad();
+  ctx->saved_data["viewmats_requires_grad"] = viewmats.requires_grad();
+
   auto sample_weights = torch::exp(-0.5f * randns.square().sum(-1, true));
 
   return {camera_ids,     gaussian_ids, radii,   means2d,       depths,
@@ -219,16 +237,23 @@ torch::autograd::tensor_list FullyFusedProjectionPacked2DGS::backward(
   int width = ctx->saved_data["width"].toInt();
   int height = ctx->saved_data["height"].toInt();
   bool sparse_grad = ctx->saved_data["sparse_grad"].toBool();
+
+  // 获取保存的 requires_grad 信息
+  bool means_requires_grad = ctx->saved_data["means_requires_grad"].toBool();
+  bool quats_requires_grad = ctx->saved_data["quats_requires_grad"].toBool();
+  bool scales_requires_grad = ctx->saved_data["scales_requires_grad"].toBool();
+  bool viewmats_requires_grad = ctx->saved_data["viewmats_requires_grad"].toBool();
+
   auto [v_means, v_quats, v_scales, v_viewmats] =
       gsplat::projection_2dgs_packed_bwd(
           means, quats, scales, viewmats, Ks, width, height, camera_ids,
           gaussian_ids, ray_transforms, randns, v_means2d.contiguous(),
           v_depths.contiguous(), v_ray_transforms.contiguous(),
           v_normals.contiguous(), v_samples.contiguous(),
-          ctx->needs_input_grad(3), // viewmats_requires_grad
+          viewmats_requires_grad, // 使用保存的值替代 ctx->needs_input_grad(3)
           sparse_grad);
 
-  if (!ctx->needs_input_grad(0)) {
+  if (!means_requires_grad) {
     v_means = torch::Tensor();
   } else if (sparse_grad) {
     // # TODO: gaussian_ids is duplicated so not ideal.
@@ -237,26 +262,26 @@ torch::autograd::tensor_list FullyFusedProjectionPacked2DGS::backward(
     // # a customized optimizer would be needed in this case.
     v_means =
         torch::sparse_coo_tensor(gaussian_ids.unsqueeze(0), v_means,
-                                 means.sizes(), {}, viewmats.size(0) == 1);
+                                 means.sizes(),  v_means.options());
   }
 
-  if (!ctx->needs_input_grad(1)) {
+  if (!quats_requires_grad) {
     v_quats = torch::Tensor();
   } else if (sparse_grad) {
     v_quats =
         torch::sparse_coo_tensor({gaussian_ids.unsqueeze(0)}, v_quats,
-                                 quats.sizes(), {}, viewmats.size(0) == 1);
+                                 quats.sizes(),  v_quats.options());
   }
 
-  if (!ctx->needs_input_grad(2)) {
+  if (!scales_requires_grad) {
     v_scales = torch::Tensor();
   } else if (sparse_grad) {
     v_scales =
         torch::sparse_coo_tensor({gaussian_ids.unsqueeze(0)}, v_scales,
-                                 scales.sizes(), {}, viewmats.size(0) == 1);
+                                 scales.sizes(),  v_scales.options());
   }
 
-  if (!ctx->needs_input_grad(3)) {
+  if (!viewmats_requires_grad) {
     v_viewmats = torch::Tensor();
   }
 

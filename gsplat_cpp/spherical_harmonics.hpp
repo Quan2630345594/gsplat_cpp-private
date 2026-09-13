@@ -1,5 +1,4 @@
 #pragma once
-
 #include <gsplat/cuda/include/Ops.h>
 #include <torch/csrc/autograd/custom_function.h>
 
@@ -13,10 +12,13 @@ public:
     auto colors =
         gsplat::spherical_harmonics_fwd(sh_degree, dirs, coeffs, masks);
     ctx->save_for_backward({dirs, coeffs});
-
     ctx->saved_data["masks"] = masks;
     ctx->saved_data["sh_degree"] = sh_degree;
     ctx->saved_data["num_bases"] = coeffs.size(-2);
+    
+    // 保存 requires_grad 信息（兼容 PyTorch 2.1）
+    ctx->saved_data["dirs_requires_grad"] = dirs.requires_grad();
+    
     return colors;
   }
 
@@ -29,16 +31,18 @@ public:
     auto masks = ctx->saved_data["masks"].toOptional<at::Tensor>();
     int sh_degree = ctx->saved_data["sh_degree"].toInt();
     int num_bases = ctx->saved_data["num_bases"].toInt();
-    bool compute_v_dirs = ctx->needs_input_grad(1);
-
+    
+    // 使用保存的值替代 ctx->needs_input_grad(1)
+    bool compute_v_dirs = ctx->saved_data["dirs_requires_grad"].toBool();
+    
     auto v_colors = grad_outputs[0].contiguous();
     auto [v_coeffs, v_dirs] = gsplat::spherical_harmonics_bwd(
         num_bases, sh_degree, dirs, coeffs, masks, v_colors, compute_v_dirs);
-
+    
     if (!compute_v_dirs) {
       v_dirs = at::Tensor();
     }
-
+    
     return {at::Tensor(), v_dirs, v_coeffs, at::Tensor()};
   }
 };
@@ -57,13 +61,11 @@ at::Tensor spherical_harmonics(int degrees_to_use,
               "dirs must have size 3 in the last dimension");
   TORCH_CHECK(coeffs.size(-1) == 3,
               "coeffs must have size 3 in the last dimension");
-
   if (masks.has_value()) {
     TORCH_CHECK(masks.value().sizes() == dirs.sizes().slice(0, dirs.dim() - 1),
                 "Shape mismatch between masks and dirs");
     masks = masks.value().contiguous();
   }
-
   // Call the custom autograd function
   return SphericalHarmonics::apply(degrees_to_use, dirs.contiguous(),
                                    coeffs.contiguous(), masks);
