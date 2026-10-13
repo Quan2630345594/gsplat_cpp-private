@@ -1,6 +1,7 @@
 #include "rasterize_to_pixels.h"
 
 #include <gsplat/cuda/include/Ops.h>
+#include <gsplat/cuda/csrc/Rasterization.h>
 
 using namespace torch;
 using namespace std;
@@ -289,7 +290,9 @@ rasterize_to_pixels_2dgs(
     const torch::Tensor &flatten_ids,        // [n_isects]
     at::optional<torch::Tensor> backgrounds, // [C, channels]
     at::optional<torch::Tensor> masks,       // [C, tile_height, tile_width]
-    bool packed, const torch::Tensor &absgrad, bool distloss) {
+    bool packed, const torch::Tensor &absgrad, bool distloss,
+    bool inference_only) {
+  at::AutoGradMode grad_mode(!inference_only && at::GradMode::is_enabled());
   int C = isect_offsets.size(0);
   auto device = means2d.device();
 
@@ -352,11 +355,26 @@ rasterize_to_pixels_2dgs(
   TORCH_CHECK(ray_transforms.is_contiguous());
   TORCH_CHECK(pad_colors.is_contiguous());
   TORCH_CHECK(opacities.is_contiguous());
-  TORCH_CHECK(normals.is_contiguous());
-  TORCH_CHECK(densify.is_contiguous());
+  if (!inference_only) {
+    TORCH_CHECK(normals.is_contiguous());
+    TORCH_CHECK(densify.is_contiguous());
+    TORCH_CHECK(absgrad.is_contiguous());
+  }
   TORCH_CHECK(isect_offsets.is_contiguous());
   TORCH_CHECK(flatten_ids.is_contiguous());
-  TORCH_CHECK(absgrad.is_contiguous());
+
+  if (inference_only) {
+    auto [render_colors, render_alphas, render_median] =
+        gsplat::rasterize_to_pixels_2dgs_fwd_inference(
+            means2d, ray_transforms, pad_colors, opacities, backgrounds, masks,
+            image_width, image_height, tile_size, isect_offsets, flatten_ids);
+    if (padded_channels > 0) {
+      render_colors = render_colors.slice(-1, 0, -padded_channels);
+    }
+    // Keep tuple positions; inference does not produce auxiliary outputs.
+    return {render_colors, torch::Tensor(), render_alphas, torch::Tensor(),
+            torch::Tensor(), render_median, torch::Tensor()};
+  }
 
   auto outputs = RasterizeToPixels2DGS::apply(
       means2d, ray_transforms, pad_colors, opacities, normals, densify,

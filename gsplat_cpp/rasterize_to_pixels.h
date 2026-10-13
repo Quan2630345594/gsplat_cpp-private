@@ -61,6 +61,8 @@ public:
            torch::autograd::tensor_list grad_outputs);
 };
 
+// inference_only returns RGB/features, alpha and median at indices 0, 2 and 5;
+// other outputs are undefined, and normals/densify/absgrad/distloss are ignored.
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
            torch::Tensor, torch::Tensor,
            torch::Tensor>
@@ -78,4 +80,4 @@ rasterize_to_pixels_2dgs(
     at::optional<torch::Tensor> masks =
         at::nullopt, // [C, tile_height, tile_width]
     bool packed = false, const torch::Tensor &absgrad = torch::Tensor(),
-    bool distloss = false);
+    bool distloss = false, bool inference_only = false);

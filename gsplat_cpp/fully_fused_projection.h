@@ -44,13 +44,14 @@ public:
           const torch::Tensor &viewmats, // [C, 4, 4]
           const torch::Tensor &Ks,       // [C, 3, 3]
           int width, int height, float near_plane, float far_plane,
-          float radius_clip, bool sparse_grad);
+          float radius_clip, bool sparse_grad, bool compute_samples = true);
 
   static torch::autograd::tensor_list
   backward(torch::autograd::AutogradContext *ctx,
            torch::autograd::tensor_list grad_outputs);
 };
 
+// With compute_samples=false, samples and sample_weights are undefined.
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
            torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
            torch::Tensor>
@@ -61,4 +62,5 @@ fully_fused_projection_2dgs(torch::Tensor means,    // [N, 3]
                             torch::Tensor Ks,       // [C, 3, 3]
                             int width, int height, float near_plane = 0.01f,
                             float far_plane = 1e10f, float radius_clip = 0.0f,
-                            bool packed = false, bool sparse_grad = false);
+                            bool packed = false, bool sparse_grad = false,
+                            bool compute_samples = true);
