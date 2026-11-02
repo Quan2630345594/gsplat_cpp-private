@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.18)
 project(gsplat_cpp LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 # Ensure `-fPIC` is used
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 

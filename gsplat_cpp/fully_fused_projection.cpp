@@ -188,12 +188,12 @@ torch::autograd::tensor_list FullyFusedProjectionPacked2DGS::forward(
     const torch::Tensor &viewmats, // [C, 4, 4]
     const torch::Tensor &Ks,       // [C, 3, 3]
     int width, int height, float near_plane, float far_plane, float radius_clip,
-    bool sparse_grad) {
+    bool sparse_grad, bool compute_samples) {
   auto [indptr, camera_ids, gaussian_ids, radii, means2d, depths,
         ray_transforms, normals, randns, samples] =
       gsplat::projection_2dgs_packed_fwd(means, quats, scales, viewmats, Ks,
                                          width, height, near_plane, far_plane,
-                                         radius_clip);
+                                         radius_clip, compute_samples);
 
   ctx->save_for_backward({camera_ids, gaussian_ids, means, quats, scales,
                           viewmats, Ks, ray_transforms, randns});
@@ -201,12 +201,19 @@ torch::autograd::tensor_list FullyFusedProjectionPacked2DGS::forward(
   ctx->saved_data["width"] = width;
   ctx->saved_data["height"] = height;
   ctx->saved_data["sparse_grad"] = sparse_grad;
+  ctx->saved_data["compute_samples"] = compute_samples;
 
   // 保存 requires_grad 信息（兼容 PyTorch 2.1）
   ctx->saved_data["means_requires_grad"] = means.requires_grad();
   ctx->saved_data["quats_requires_grad"] = quats.requires_grad();
   ctx->saved_data["scales_requires_grad"] = scales.requires_grad();
   ctx->saved_data["viewmats_requires_grad"] = viewmats.requires_grad();
+
+  // Keep undefined optional outputs outside the C++ autograd output wrapper.
+  if (!compute_samples) {
+    return {camera_ids, gaussian_ids, radii, means2d, depths,
+            ray_transforms, normals};
+  }
 
   auto sample_weights = torch::exp(-0.5f * randns.square().sum(-1, true));
 
@@ -221,7 +228,9 @@ torch::autograd::tensor_list FullyFusedProjectionPacked2DGS::backward(
   auto v_depths = grad_outputs[4];
   auto v_ray_transforms = grad_outputs[5];
   auto v_normals = grad_outputs[6];
-  auto v_samples = grad_outputs[7];
+  auto v_samples = ctx->saved_data["compute_samples"].toBool()
+                       ? grad_outputs[7].contiguous()
+                       : torch::Tensor();
 
   auto saved = ctx->get_saved_variables();
   auto camera_ids = saved[0];
@@ -249,7 +258,7 @@ torch::autograd::tensor_list FullyFusedProjectionPacked2DGS::backward(
           means, quats, scales, viewmats, Ks, width, height, camera_ids,
           gaussian_ids, ray_transforms, randns, v_means2d.contiguous(),
           v_depths.contiguous(), v_ray_transforms.contiguous(),
-          v_normals.contiguous(), v_samples.contiguous(),
+          v_normals.contiguous(), v_samples,
           viewmats_requires_grad, // 使用保存的值替代 ctx->needs_input_grad(3)
           sparse_grad);
 
@@ -301,7 +310,7 @@ fully_fused_projection_2dgs(torch::Tensor means,    // [N, 3]
                             torch::Tensor Ks,       // [C, 3, 3]
                             int width, int height, float near_plane,
                             float far_plane, float radius_clip, bool packed,
-                            bool sparse_grad) {
+                            bool sparse_grad, bool compute_samples) {
   int C = viewmats.size(0);
   int N = means.size(0);
   TORCH_CHECK(means.sizes() == torch::IntArrayRef({N, 3}),
@@ -328,8 +337,9 @@ fully_fused_projection_2dgs(torch::Tensor means,    // [N, 3]
 
   auto outputs = FullyFusedProjectionPacked2DGS::apply(
       means, quats, scales, viewmats, Ks, width, height, near_plane, far_plane,
-      radius_clip, sparse_grad);
+      radius_clip, sparse_grad, compute_samples);
   return std::make_tuple(outputs[0], outputs[1], outputs[2], outputs[3],
-                         outputs[4], outputs[5], outputs[6], outputs[7],
-                         outputs[8]);
+                         outputs[4], outputs[5], outputs[6],
+                         compute_samples ? outputs[7] : torch::Tensor(),
+                         compute_samples ? outputs[8] : torch::Tensor());
 }
