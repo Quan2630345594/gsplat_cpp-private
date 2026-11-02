@@ -143,10 +143,12 @@ __global__ void projection_2dgs_packed_fwd_kernel(
             valid = false;
         }
 
-        // normal dual visible
-        normal = RS_camera[2];
-        float multipler = glm::dot(-normal, mean_c) > 0 ? 1 : -1;
-        normal *= multipler;
+        if (normals != nullptr) {
+            // normal dual visible (not needed in the counting pass)
+            normal = RS_camera[2];
+            float multipler = glm::dot(-normal, mean_c) > 0 ? 1 : -1;
+            normal *= multipler;
+        }
     }
 
     int32_t thread_data = static_cast<int32_t>(valid);
@@ -192,17 +194,20 @@ __global__ void projection_2dgs_packed_fwd_kernel(
             ray_transforms[thread_data * 9 + 6] = M[2][0];
             ray_transforms[thread_data * 9 + 7] = M[2][1];
             ray_transforms[thread_data * 9 + 8] = M[2][2];
-            normals[thread_data * 3] = normal.x;
-            normals[thread_data * 3 + 1] = normal.y;
-            normals[thread_data * 3 + 2] = normal.z;
+            if (normals != nullptr) {
+                normals[thread_data * 3] = normal.x;
+                normals[thread_data * 3 + 1] = normal.y;
+                normals[thread_data * 3 + 2] = normal.z;
+            }
 
-            // sample point
-            vec3 sample = RS_world[0] * randns[thread_data * 2] +
-                          RS_world[1] * randns[thread_data * 2 + 1] +
-                          glm::make_vec3(means);
-            samples[thread_data * 3] = sample.x;
-            samples[thread_data * 3 + 1] = sample.y;
-            samples[thread_data * 3 + 2] = sample.z;
+            if (samples != nullptr) {
+                vec3 sample = RS_world[0] * randns[thread_data * 2] +
+                              RS_world[1] * randns[thread_data * 2 + 1] +
+                              glm::make_vec3(means);
+                samples[thread_data * 3] = sample.x;
+                samples[thread_data * 3 + 1] = sample.y;
+                samples[thread_data * 3 + 2] = sample.z;
+            }
         }
         // lane 0 of the first block in each row writes the indptr
         if (threadIdx.x == 0 && block_col_idx == 0) {
@@ -340,11 +345,13 @@ __global__ void projection_2dgs_packed_bwd_kernel(
     Ks += cid * 9;
 
     ray_transforms += idx * 9;
-    randns += idx * 2;
+    if (randns != nullptr) {
+        randns += idx * 2;
+        v_samples += idx * 3;
+    }
 
     v_means2d += idx * 2;
     v_normals += idx * 3;
-    v_samples += idx * 3;
     v_depths += idx;
     v_ray_transforms += idx * 9;
 
@@ -408,29 +415,31 @@ __global__ void projection_2dgs_packed_bwd_kernel(
         v_R,
         v_t
     );
-    vec3 v_sample = glm::make_vec3(v_samples);
-    vec2 randn = glm::make_vec2(randns);
-    v_mean += v_sample;
-    mat3 R_gs = quat_to_rotmat(quat);
-    // scale weigth to much to make splat too thin
-    v_scale[0] += glm::dot(v_sample, R_gs[0] * randn[0]);
-    v_scale[1] += glm::dot(v_sample, R_gs[1] * randn[1]);
-    vec2 srandn = randn * scale;
-    mat3 v_R_gs = mat3(
-        // First column
-        v_sample[0] * srandn[0],
-        v_sample[1] * srandn[0],
-        v_sample[2] * srandn[0],
-        // Second column
-        v_sample[0] * srandn[1],
-        v_sample[1] * srandn[1],
-        v_sample[2] * srandn[1],
-        // Third column
-        0.0,
-        0.0,
-        0.0
-    );
-    quat_to_rotmat_vjp(quat, v_R_gs, v_quat);
+    if (randns != nullptr) {
+        vec3 v_sample = glm::make_vec3(v_samples);
+        vec2 randn = glm::make_vec2(randns);
+        v_mean += v_sample;
+        mat3 R_gs = quat_to_rotmat(quat);
+        // scale weigth to much to make splat too thin
+        v_scale[0] += glm::dot(v_sample, R_gs[0] * randn[0]);
+        v_scale[1] += glm::dot(v_sample, R_gs[1] * randn[1]);
+        vec2 srandn = randn * scale;
+        mat3 v_R_gs = mat3(
+            // First column
+            v_sample[0] * srandn[0],
+            v_sample[1] * srandn[0],
+            v_sample[2] * srandn[0],
+            // Second column
+            v_sample[0] * srandn[1],
+            v_sample[1] * srandn[1],
+            v_sample[2] * srandn[1],
+            // Third column
+            0.0,
+            0.0,
+            0.0
+        );
+        quat_to_rotmat_vjp(quat, v_R_gs, v_quat);
+    }
 
     auto warp = cg::tiled_partition<32>(cg::this_thread_block());
     if (sparse_grad) {
@@ -555,12 +564,12 @@ void launch_projection_2dgs_packed_bwd_kernel(
             camera_ids.data_ptr<int64_t>(),
             gaussian_ids.data_ptr<int64_t>(),
             ray_transforms.data_ptr<float>(),
-            randns.data_ptr<float>(),
+            randns.defined() ? randns.data_ptr<float>() : nullptr,
             v_means2d.data_ptr<float>(),
             v_depths.data_ptr<float>(),
             v_ray_transforms.data_ptr<float>(),
             v_normals.data_ptr<float>(),
-            v_samples.data_ptr<float>(),
+            v_samples.defined() ? v_samples.data_ptr<float>() : nullptr,
             sparse_grad,
             v_means.data_ptr<float>(),
             v_quats.data_ptr<float>(),

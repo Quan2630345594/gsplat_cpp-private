@@ -233,13 +233,13 @@ void launch_projection_2dgs_packed_bwd_kernel(
     const at::Tensor camera_ids,     // [nnz]
     const at::Tensor gaussian_ids,   // [nnz]
     const at::Tensor ray_transforms, // [nnz, 3, 3]
-    const at::Tensor randns,         // [nnz, 2]
+    const at::Tensor randns,         // [nnz, 2] or undefined without samples
     // grad outputs
     const at::Tensor v_means2d,        // [nnz, 2]
     const at::Tensor v_depths,         // [nnz]
     const at::Tensor v_ray_transforms, // [nnz, 3, 3]
     const at::Tensor v_normals,        // [nnz, 3]
-    const at::Tensor v_samples,        // [nnz, 3]
+    const at::Tensor v_samples,        // [nnz, 3] or undefined without samples
     const bool sparse_grad,
     // grad inputs
     at::Tensor v_means,                 // [N, 3] or [nnz, 3]

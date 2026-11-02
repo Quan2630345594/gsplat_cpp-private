@@ -348,7 +348,8 @@ projection_2dgs_packed_fwd(
     const uint32_t image_height,
     const float near_plane,
     const float far_plane,
-    const float radius_clip
+    const float radius_clip,
+    const bool compute_samples = true // false returns undefined randns/samples
 );
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 projection_2dgs_packed_bwd(
@@ -364,13 +365,13 @@ projection_2dgs_packed_bwd(
     const at::Tensor camera_ids,     // [nnz]
     const at::Tensor gaussian_ids,   // [nnz]
     const at::Tensor ray_transforms, // [nnz, 3, 3]
-    const at::Tensor randns,         // [nnz, 3]
+    const at::Tensor randns,         // [nnz, 2] or undefined without samples
     // grad outputs
     const at::Tensor v_means2d,        // [nnz, 2]
     const at::Tensor v_depths,         // [nnz]
     const at::Tensor v_ray_transforms, // [nnz, 3, 3]
     const at::Tensor v_normals,        // [nnz, 3]
-    const at::Tensor v_samples,        // [nnz, 3]
+    const at::Tensor v_samples,        // [nnz, 3] or undefined without samples
     const bool viewmats_requires_grad,
     const bool sparse_grad
 );

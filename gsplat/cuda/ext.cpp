@@ -55,7 +55,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     m.def("projection_2dgs_fused_fwd", &gsplat::projection_2dgs_fused_fwd);
     m.def("projection_2dgs_fused_bwd", &gsplat::projection_2dgs_fused_bwd);
-    m.def("projection_2dgs_packed_fwd", &gsplat::projection_2dgs_packed_fwd);
+    m.def(
+        "projection_2dgs_packed_fwd", &gsplat::projection_2dgs_packed_fwd,
+        py::arg("means"), py::arg("quats"), py::arg("scales"),
+        py::arg("viewmats"), py::arg("Ks"), py::arg("image_width"),
+        py::arg("image_height"), py::arg("near_plane"), py::arg("far_plane"),
+        py::arg("radius_clip"), py::arg("compute_samples") = true
+    );
     m.def("projection_2dgs_packed_bwd", &gsplat::projection_2dgs_packed_bwd);
 
     m.def(

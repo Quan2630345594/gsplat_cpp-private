@@ -310,7 +310,7 @@ std::tuple<at::Tensor, at::Tensor> rasterize_to_indices_3dgs(
 // 2DGS
 ////////////////////////////////////////////////////
 
-std::tuple<
+static std::tuple<
     at::Tensor,
     at::Tensor,
     at::Tensor,
@@ -321,7 +321,7 @@ std::tuple<
     at::Tensor,
     at::Tensor,
     at::Tensor>
-rasterize_to_pixels_2dgs_fwd(
+rasterize_to_pixels_2dgs_fwd_impl(
     // Gaussian parameters
     const at::Tensor means2d,        // [C, N, 2] or [nnz, 2]
     const at::Tensor ray_transforms, // [C, N, 3] or [nnz, 3]
@@ -336,14 +336,17 @@ rasterize_to_pixels_2dgs_fwd(
     const uint32_t tile_size,
     // intersections
     const at::Tensor tile_offsets, // [C, tile_height, tile_width]
-    const at::Tensor flatten_ids   // [n_isects]
+    const at::Tensor flatten_ids,  // [n_isects]
+    const bool inference_only
 ) {
     DEVICE_GUARD(means2d);
     CHECK_INPUT(means2d);
     CHECK_INPUT(ray_transforms);
     CHECK_INPUT(colors);
     CHECK_INPUT(opacities);
-    CHECK_INPUT(normals);
+    if (!inference_only) {
+        CHECK_INPUT(normals);
+    }
     CHECK_INPUT(tile_offsets);
     CHECK_INPUT(flatten_ids);
     if (backgrounds.has_value()) {
@@ -359,31 +362,25 @@ rasterize_to_pixels_2dgs_fwd(
 
     at::Tensor renders =
         at::empty({C, image_height, image_width, channels}, opt);
-    at::Tensor depths = at::empty(
-        {C, image_height, image_width, 1}, means2d.options().dtype(at::kFloat)
-    );
     at::Tensor alphas = at::empty({C, image_height, image_width, 1}, opt);
-    at::Tensor Ts = at::empty(
-        {C, image_height, image_width, 2}, means2d.options().dtype(at::kFloat)
-    );
-    at::Tensor last_ids =
-        at::empty({C, image_height, image_width}, opt.dtype(at::kInt));
-    at::Tensor median_ids =
-        at::empty({C, image_height, image_width}, opt.dtype(at::kInt));
-    at::Tensor render_normals =
-        at::empty({C, image_height, image_width, 3}, opt);
-    at::Tensor render_distort =
-        at::empty({C, image_height, image_width, 1}, opt);
     at::Tensor render_median =
         at::empty({C, image_height, image_width, 1}, opt);
-    auto visibilities_sizes = means2d.sizes().vec();
-    visibilities_sizes[means2d.dim() - 1] = 1;
-    at::Tensor visibilities =
-        at::zeros(visibilities_sizes, means2d.options().dtype(at::kFloat));
+    at::Tensor depths, Ts, last_ids, median_ids, render_normals, render_distort,
+        visibilities;
+    if (!inference_only) {
+        depths = at::empty({C, image_height, image_width, 1}, opt.dtype(at::kFloat));
+        Ts = at::empty({C, image_height, image_width, 2}, opt.dtype(at::kFloat));
+        last_ids = at::empty({C, image_height, image_width}, opt.dtype(at::kInt));
+        median_ids = at::empty({C, image_height, image_width}, opt.dtype(at::kInt));
+        render_normals = at::empty({C, image_height, image_width, 3}, opt);
+        render_distort = at::empty({C, image_height, image_width, 1}, opt);
+        auto visibilities_sizes = means2d.sizes().vec();
+        visibilities_sizes[means2d.dim() - 1] = 1;
+        visibilities = at::zeros(visibilities_sizes, opt.dtype(at::kFloat));
+    }
 
-#define __LAUNCH_KERNEL__(N)                                                   \
-    case N:                                                                    \
-        launch_rasterize_to_pixels_2dgs_fwd_kernel<N>(                         \
+#define __LAUNCH_2DGS_KERNEL__(N, INFERENCE_ONLY)                               \
+        launch_rasterize_to_pixels_2dgs_fwd_kernel<N, INFERENCE_ONLY>(           \
             means2d,                                                           \
             ray_transforms,                                                    \
             colors,                                                            \
@@ -406,7 +403,15 @@ rasterize_to_pixels_2dgs_fwd(
             last_ids,                                                          \
             median_ids,                                                        \
             visibilities                                                       \
-        );                                                                     \
+        );
+
+#define __LAUNCH_KERNEL__(N)                                                   \
+    case N:                                                                    \
+        if (inference_only) {                                                  \
+            __LAUNCH_2DGS_KERNEL__(N, true)                                     \
+        } else {                                                               \
+            __LAUNCH_2DGS_KERNEL__(N, false)                                    \
+        }                                                                      \
         break;
 
     // TODO: an optimization can be done by passing the actual number of
@@ -449,6 +454,51 @@ rasterize_to_pixels_2dgs_fwd(
         median_ids,
         visibilities
     );
+}
+
+#undef __LAUNCH_2DGS_KERNEL__
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor,
+           at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+rasterize_to_pixels_2dgs_fwd(
+    const at::Tensor means2d,
+    const at::Tensor ray_transforms,
+    const at::Tensor colors,
+    const at::Tensor opacities,
+    const at::Tensor normals,
+    const at::optional<at::Tensor> backgrounds,
+    const at::optional<at::Tensor> masks,
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
+    const at::Tensor tile_offsets,
+    const at::Tensor flatten_ids
+) {
+    return rasterize_to_pixels_2dgs_fwd_impl(
+        means2d, ray_transforms, colors, opacities, normals, backgrounds, masks,
+        image_width, image_height, tile_size, tile_offsets, flatten_ids, false
+    );
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor>
+rasterize_to_pixels_2dgs_fwd_inference(
+    const at::Tensor means2d,
+    const at::Tensor ray_transforms,
+    const at::Tensor colors,
+    const at::Tensor opacities,
+    const at::optional<at::Tensor> backgrounds,
+    const at::optional<at::Tensor> masks,
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
+    const at::Tensor tile_offsets,
+    const at::Tensor flatten_ids
+) {
+    auto outputs = rasterize_to_pixels_2dgs_fwd_impl(
+        means2d, ray_transforms, colors, opacities, at::Tensor(), backgrounds,
+        masks, image_width, image_height, tile_size, tile_offsets, flatten_ids, true
+    );
+    return {std::get<0>(outputs), std::get<2>(outputs), std::get<6>(outputs)};
 }
 
 std::tuple<

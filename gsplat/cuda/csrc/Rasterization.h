@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <tuple>
 
 namespace at {
 class Tensor;
@@ -98,7 +99,23 @@ void launch_rasterize_to_indices_3dgs_kernel(
 // rasterize_to_pixels_2dgs
 /////////////////////////////////////////////////
 
-template <uint32_t CDIM>
+// Non-autograd forward: RGB/features, alpha, median depth only.
+std::tuple<at::Tensor, at::Tensor, at::Tensor>
+rasterize_to_pixels_2dgs_fwd_inference(
+    const at::Tensor means2d,
+    const at::Tensor ray_transforms,
+    const at::Tensor colors,
+    const at::Tensor opacities,
+    const at::optional<at::Tensor> backgrounds,
+    const at::optional<at::Tensor> masks,
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
+    const at::Tensor tile_offsets,
+    const at::Tensor flatten_ids
+);
+
+template <uint32_t CDIM, bool INFERENCE_ONLY = false>
 void launch_rasterize_to_pixels_2dgs_fwd_kernel(
     // Gaussian parameters
     const at::Tensor means2d,        // [C, N, 2] or [nnz, 2]

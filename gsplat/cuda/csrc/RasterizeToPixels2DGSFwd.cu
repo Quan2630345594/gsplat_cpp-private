@@ -15,7 +15,7 @@ namespace cg = cooperative_groups;
 // Forward
 ////////////////////////////////////////////////////////////////
 
-template <uint32_t CDIM, typename scalar_t>
+template <uint32_t CDIM, typename scalar_t, bool INFERENCE_ONLY>
 __global__ void rasterize_to_pixels_2dgs_fwd_kernel(
     const uint32_t C,        // number of cameras
     const uint32_t N,        // number of gaussians
@@ -112,21 +112,18 @@ __global__ void rasterize_to_pixels_2dgs_fwd_kernel(
     render_colors +=
         camera_id * image_height * image_width *
         CDIM; // get the global offset of the pixel w.r.t the camera
-    render_depths +=
-        camera_id * image_height *
-        image_width; // get the global offset of the pixel w.r.t the camera
     render_alphas +=
         camera_id * image_height *
         image_width; // get the global offset of the pixel w.r.t the camera
-    render_Ts += camera_id * image_height * image_width *
-                 2; // get the global offset of the pixel w.r.t the camera
-    last_ids +=
-        camera_id * image_height *
-        image_width; // get the global offset of the pixel w.r.t the camera
-    render_normals += camera_id * image_height * image_width * 3;
-    render_distort += camera_id * image_height * image_width;
     render_median += camera_id * image_height * image_width;
-    median_ids += camera_id * image_height * image_width;
+    if constexpr (!INFERENCE_ONLY) {
+        render_depths += camera_id * image_height * image_width;
+        render_Ts += camera_id * image_height * image_width * 2;
+        last_ids += camera_id * image_height * image_width;
+        render_normals += camera_id * image_height * image_width * 3;
+        render_distort += camera_id * image_height * image_width;
+        median_ids += camera_id * image_height * image_width;
+    }
 
     // get the global offset of the background and mask
     if (backgrounds != nullptr) {
@@ -389,52 +386,60 @@ __global__ void rasterize_to_pixels_2dgs_fwd_kernel(
             // run volumetric rendering..
             int32_t g = id_batch[t];
             const float vis = alpha * T;
-            gpuAtomicAdd(&visibilities[g], vis);
+            if constexpr (!INFERENCE_ONLY) {
+                gpuAtomicAdd(&visibilities[g], vis);
+            }
             const float *c_ptr = colors + g * CDIM;
 #pragma unroll
             for (uint32_t k = 0; k < CDIM; ++k) {
                 pix_out[k] += c_ptr[k] * vis;
             }
 
-            depth_out += depth * vis;
+            if constexpr (!INFERENCE_ONLY) {
+                depth_out += depth * vis;
 
-            const float *n_ptr = normals + g * 3;
+                const float *n_ptr = normals + g * 3;
 #pragma unroll
-            for (uint32_t k = 0; k < 3; ++k) {
-                normal_out[k] += n_ptr[k] * vis;
-            }
+                for (uint32_t k = 0; k < 3; ++k) {
+                    normal_out[k] += n_ptr[k] * vis;
+                }
 
-            if (render_distort != nullptr) {
-                // the last channel of colors is depth
-                // const float depth = c_ptr[COLOR_DIM - 1];
+                if (render_distort != nullptr) {
+                    // the last channel of colors is depth
+                    // const float depth = c_ptr[COLOR_DIM - 1];
 
-                float A = 1.0f - T;
-                float m = far_n / (far_n - near_n) * (1 - near_n / depth);
-                // float m = depth;
-                distort += (m * m * A + M1 - 2 * m * M2) * vis;
-                M1 += m * m * vis;
-                M2 += m * vis;
+                    float A = 1.0f - T;
+                    float m = far_n / (far_n - near_n) * (1 - near_n / depth);
+                    // float m = depth;
+                    distort += (m * m * A + M1 - 2 * m * M2) * vis;
+                    M1 += m * m * vis;
+                    M2 += m * vis;
 
-                // mipnerf not properly suited, as gs not depth order maybe,
-                // leads to minus number
-                // // in nerfacc, loss_bi_0 = weights * t_mids *
-                // // exclusive_sum(weights)
-                // const floatS distort_bi_0 = vis * depth * (1.0f - T);
-                // // in nerfacc, loss_bi_1 = weights * exclusive_sum(weights *
-                // // t_mids)
-                // const float distort_bi_1 = vis * accum_vis_depth;
-                // distort += 2.0f * (distort_bi_0 - distort_bi_1);
-                // accum_vis_depth += vis * depth;
+                    // mipnerf not properly suited, as gs not depth order maybe,
+                    // leads to minus number
+                    // // in nerfacc, loss_bi_0 = weights * t_mids *
+                    // // exclusive_sum(weights)
+                    // const floatS distort_bi_0 = vis * depth * (1.0f - T);
+                    // // in nerfacc, loss_bi_1 = weights * exclusive_sum(weights *
+                    // // t_mids)
+                    // const float distort_bi_1 = vis * accum_vis_depth;
+                    // distort += 2.0f * (distort_bi_0 - distort_bi_1);
+                    // accum_vis_depth += vis * depth;
+                }
             }
 
             // compute median depth
             if (T > 0.5) {
                 // median_depth = c_ptr[COLOR_DIM - 1];
                 median_depth = depth;
-                median_idx = batch_start + t;
+                if constexpr (!INFERENCE_ONLY) {
+                    median_idx = batch_start + t;
+                }
             }
 
-            cur_idx = batch_start + t;
+            if constexpr (!INFERENCE_ONLY) {
+                cur_idx = batch_start + t;
+            }
 
             T = next_T;
         }
@@ -445,34 +450,40 @@ __global__ void rasterize_to_pixels_2dgs_fwd_kernel(
         // pass and it can be very small and causing large diff in gradients
         // with float32. However, double precision makes the backward pass 1.5x
         // slower so we stick with float for now.
-        render_depths[pix_id] = depth_out;
         render_alphas[pix_id] = 1.0f - T;
-        render_Ts[pix_id] = M1;
-        render_Ts[pix_id + 1] = M2;
+        if constexpr (!INFERENCE_ONLY) {
+            render_depths[pix_id] = depth_out;
+            render_Ts[pix_id] = M1;
+            render_Ts[pix_id + 1] = M2;
+        }
 #pragma unroll
         for (uint32_t k = 0; k < CDIM; ++k) {
             render_colors[pix_id * CDIM + k] =
                 backgrounds == nullptr ? pix_out[k]
                                        : (pix_out[k] + T * backgrounds[k]);
         }
+        if constexpr (!INFERENCE_ONLY) {
 #pragma unroll
-        for (uint32_t k = 0; k < 3; ++k) {
-            render_normals[pix_id * 3 + k] = normal_out[k];
-        }
-        // index in bin of last gaussian in this pixel
-        last_ids[pix_id] = static_cast<int32_t>(cur_idx);
+            for (uint32_t k = 0; k < 3; ++k) {
+                render_normals[pix_id * 3 + k] = normal_out[k];
+            }
+            // index in bin of last gaussian in this pixel
+            last_ids[pix_id] = static_cast<int32_t>(cur_idx);
 
-        if (render_distort != nullptr) {
-            render_distort[pix_id] = distort;
+            if (render_distort != nullptr) {
+                render_distort[pix_id] = distort;
+            }
         }
 
         render_median[pix_id] = median_depth;
-        // index in bin of gaussian that contributes to median depth
-        median_ids[pix_id] = static_cast<int32_t>(median_idx);
+        if constexpr (!INFERENCE_ONLY) {
+            // index in bin of gaussian that contributes to median depth
+            median_ids[pix_id] = static_cast<int32_t>(median_idx);
+        }
     }
 }
 
-template <uint32_t CDIM>
+template <uint32_t CDIM, bool INFERENCE_ONLY>
 void launch_rasterize_to_pixels_2dgs_fwd_kernel(
     // Gaussian parameters
     const at::Tensor means2d,        // [C, N, 2] or [nnz, 2]
@@ -522,7 +533,7 @@ void launch_rasterize_to_pixels_2dgs_fwd_kernel(
     // channels into the kernel functions and avoid necessary global memory
     // writes. This requires moving the channel padding from python to C side.
     if (cudaFuncSetAttribute(
-            rasterize_to_pixels_2dgs_fwd_kernel<CDIM, float>,
+            rasterize_to_pixels_2dgs_fwd_kernel<CDIM, float, INFERENCE_ONLY>,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             shmem_size
         ) != cudaSuccess) {
@@ -533,7 +544,7 @@ void launch_rasterize_to_pixels_2dgs_fwd_kernel(
         );
     }
 
-    rasterize_to_pixels_2dgs_fwd_kernel<CDIM, float>
+    rasterize_to_pixels_2dgs_fwd_kernel<CDIM, float, INFERENCE_ONLY>
         <<<grid, threads, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
             C,
             N,
@@ -543,7 +554,7 @@ void launch_rasterize_to_pixels_2dgs_fwd_kernel(
             ray_transforms.data_ptr<float>(),
             colors.data_ptr<float>(),
             opacities.data_ptr<float>(),
-            normals.data_ptr<float>(),
+            INFERENCE_ONLY ? nullptr : normals.data_ptr<float>(),
             backgrounds.has_value() ? backgrounds.value().data_ptr<float>()
                                     : nullptr,
             masks.has_value() ? masks.value().data_ptr<bool>() : nullptr,
@@ -555,23 +566,23 @@ void launch_rasterize_to_pixels_2dgs_fwd_kernel(
             tile_offsets.data_ptr<int32_t>(),
             flatten_ids.data_ptr<int32_t>(),
             renders.data_ptr<float>(),
-            depths.data_ptr<float>(),
+            INFERENCE_ONLY ? nullptr : depths.data_ptr<float>(),
             alphas.data_ptr<float>(),
-            Ts.data_ptr<float>(),
-            render_normals.data_ptr<float>(),
-            render_distort.data_ptr<float>(),
+            INFERENCE_ONLY ? nullptr : Ts.data_ptr<float>(),
+            INFERENCE_ONLY ? nullptr : render_normals.data_ptr<float>(),
+            INFERENCE_ONLY ? nullptr : render_distort.data_ptr<float>(),
             render_median.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>(),
-            median_ids.data_ptr<int32_t>(),
-            visibilities.data_ptr<float>()
+            INFERENCE_ONLY ? nullptr : last_ids.data_ptr<int32_t>(),
+            INFERENCE_ONLY ? nullptr : median_ids.data_ptr<int32_t>(),
+            INFERENCE_ONLY ? nullptr : visibilities.data_ptr<float>()
         );
 }
 
 // Explicit Instantiation: this should match how it is being called in .cpp
 // file.
 // TODO: this is slow to compile, can we do something about it?
-#define __INS__(CDIM)                                                          \
-    template void launch_rasterize_to_pixels_2dgs_fwd_kernel<CDIM>(            \
+#define __INS_IMPL__(CDIM, INFERENCE_ONLY)                                      \
+    template void launch_rasterize_to_pixels_2dgs_fwd_kernel<CDIM, INFERENCE_ONLY>( \
         const at::Tensor means2d,                                              \
         const at::Tensor ray_transforms,                                       \
         const at::Tensor colors,                                               \
@@ -596,6 +607,10 @@ void launch_rasterize_to_pixels_2dgs_fwd_kernel(
         at::Tensor visibilities                                                \
     );
 
+#define __INS__(CDIM)                                                          \
+    __INS_IMPL__(CDIM, false)                                                  \
+    __INS_IMPL__(CDIM, true)
+
 __INS__(1)
 __INS__(2)
 __INS__(3)
@@ -616,5 +631,6 @@ __INS__(257)
 __INS__(512)
 __INS__(513)
 #undef __INS__
+#undef __INS_IMPL__
 
 } // namespace gsplat

@@ -661,7 +661,8 @@ projection_2dgs_packed_fwd(
     const uint32_t image_height,
     const float near_plane,
     const float far_plane,
-    const float radius_clip
+    const float radius_clip,
+    const bool compute_samples
 ) {
     DEVICE_GUARD(means);
     CHECK_INPUT(means);
@@ -725,8 +726,11 @@ projection_2dgs_packed_fwd(
     at::Tensor depths = at::empty({nnz}, opt);
     at::Tensor ray_transforms = at::empty({nnz, 3, 3}, opt);
     at::Tensor normals = at::empty({nnz, 3}, opt);
-    at::Tensor randns = at::randn({nnz, 2}, means.options());
-    at::Tensor samples = at::empty({nnz, 3}, means.options());
+    at::Tensor randns, samples;
+    if (compute_samples) {
+        randns = at::randn({nnz, 2}, opt);
+        samples = at::empty({nnz, 3}, opt);
+    }
 
     if (nnz) {
         launch_projection_2dgs_packed_fwd_kernel(
@@ -752,8 +756,8 @@ projection_2dgs_packed_fwd(
             depths,
             ray_transforms,
             normals,
-            randns,
-            samples
+            compute_samples ? at::optional<at::Tensor>(randns) : c10::nullopt,
+            compute_samples ? at::optional<at::Tensor>(samples) : c10::nullopt
         );
     } else {
         indptr.fill_(0);
@@ -806,12 +810,18 @@ projection_2dgs_packed_bwd(
     CHECK_INPUT(camera_ids);
     CHECK_INPUT(gaussian_ids);
     CHECK_INPUT(ray_transforms);
-    CHECK_INPUT(randns);
+    TORCH_CHECK(
+        randns.defined() == v_samples.defined(),
+        "randns and v_samples must both be defined or both be undefined"
+    );
+    if (randns.defined()) {
+        CHECK_INPUT(randns);
+        CHECK_INPUT(v_samples);
+    }
     CHECK_INPUT(v_means2d);
     CHECK_INPUT(v_depths);
     CHECK_INPUT(v_normals);
     CHECK_INPUT(v_ray_transforms);
-    CHECK_INPUT(v_samples);
 
     uint32_t N = means.size(0);    // number of gaussians
     uint32_t C = viewmats.size(0); // number of cameras
